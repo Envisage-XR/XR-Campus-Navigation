@@ -7,12 +7,17 @@ using UnityEngine.Networking;
 
 /// <summary>
 /// Downloads campus places from the free Overpass API (OpenStreetMap). Results are cached on the device,
-/// so the public server is hit once per campus, not on every launch. Please keep it that way: the shared
-/// Overpass servers are run by volunteers.
+/// so the public servers are hit once per campus, not on every launch. Please keep it that way: the shared
+/// Overpass servers are run by volunteers. If one server is busy or unreachable, the next is tried.
 /// </summary>
 public class OverpassAPIManager : MonoBehaviour
 {
-    [SerializeField] string endpoint = "https://overpass-api.de/api/interpreter";
+    [SerializeField] string[] endpoints =
+    {
+        "https://lz4.overpass-api.de/api/interpreter",
+        "https://z.overpass-api.de/api/interpreter",
+        "https://overpass-api.de/api/interpreter",
+    };
     [SerializeField] string userAgent = "XR-Campus-Navigation/0.1 (student project)";
     [SerializeField] int timeoutSeconds = 40;
 
@@ -24,36 +29,48 @@ public class OverpassAPIManager : MonoBehaviour
 
         if (!forceRefresh && File.Exists(cachePath))
         {
-            if (TryParse(File.ReadAllText(cachePath), onDone, onError, "cache")) yield break;
+            if (TryParse(File.ReadAllText(cachePath), onDone, "cache")) yield break;
         }
 
         var form = new WWWForm();
         form.AddField("data", OverpassQueryBuilder.NamedPlacesAround(lat, lon, radiusMetres));
 
-        using (var req = UnityWebRequest.Post(endpoint, form))
+        string lastError = "No Overpass servers configured.";
+        foreach (string url in endpoints)
         {
-            req.timeout = timeoutSeconds;
-            req.SetRequestHeader("User-Agent", userAgent);
-            yield return req.SendWebRequest();
-
-            if (req.result != UnityWebRequest.Result.Success)
+            using (var req = UnityWebRequest.Post(url, form))
             {
-                // Fall back to a stale cache if the network is down.
-                if (File.Exists(cachePath) && TryParse(File.ReadAllText(cachePath), onDone, onError, "stale cache")) yield break;
-                Fail(onError, $"Overpass request failed: {req.error} ({req.responseCode})");
-                yield break;
-            }
+                req.timeout = timeoutSeconds;
+                req.SetRequestHeader("User-Agent", userAgent);
+                yield return req.SendWebRequest();
 
-            string json = req.downloadHandler.text;
-            if (TryParse(json, onDone, onError, "network"))
-            {
-                try { File.WriteAllText(cachePath, json); }
-                catch (Exception e) { Debug.LogWarning("[Overpass] Could not write cache: " + e.Message); }
+                if (req.result == UnityWebRequest.Result.Success)
+                {
+                    string json = req.downloadHandler.text;
+                    if (TryParse(json, onDone, "network"))
+                    {
+                        try { File.WriteAllText(cachePath, json); }
+                        catch (Exception e) { Debug.LogWarning("[Overpass] Could not write cache: " + e.Message); }
+                        yield break;
+                    }
+                    lastError = $"{url}: unreadable response";
+                }
+                else
+                {
+                    lastError = $"{url}: {req.error} ({req.responseCode})";
+                }
             }
+            Debug.LogWarning("[Overpass] " + lastError + " - trying next server.");
         }
+
+        // Every server failed: fall back to an old cache if we have one.
+        if (File.Exists(cachePath) && TryParse(File.ReadAllText(cachePath), onDone, "stale cache")) yield break;
+
+        Debug.LogWarning("[Overpass] All servers failed. Last error: " + lastError);
+        onError?.Invoke("Could not download campus places. " + lastError);
     }
 
-    static bool TryParse(string json, Action<List<CampusPoi>> onDone, Action<string> onError, string origin)
+    static bool TryParse(string json, Action<List<CampusPoi>> onDone, string origin)
     {
         try
         {
@@ -65,14 +82,7 @@ public class OverpassAPIManager : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogWarning($"[Overpass] Bad data from {origin}: {e.Message}");
-            if (origin == "network") onError?.Invoke("Could not read Overpass response: " + e.Message);
             return false;
         }
-    }
-
-    static void Fail(Action<string> onError, string message)
-    {
-        Debug.LogWarning("[Overpass] " + message);
-        onError?.Invoke(message);
     }
 }

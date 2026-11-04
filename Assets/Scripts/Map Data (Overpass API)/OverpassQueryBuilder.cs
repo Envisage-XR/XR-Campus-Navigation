@@ -14,7 +14,7 @@ public static class OverpassQueryBuilder
         return
             "[out:json][timeout:25];\n" +
             "(\n" +
-            $"  nwr[\"name\"][~\"^(building|amenity|tourism|leisure|shop|office|entrance|man_made|highway)$\"~\".\"]{around};\n" +
+            $"  nwr[\"name\"][~\"^(building|amenity|tourism|leisure|shop|office|entrance|man_made)$\"~\".\"]{around};\n" +
             ");\n" +
             "out center tags;";
     }
